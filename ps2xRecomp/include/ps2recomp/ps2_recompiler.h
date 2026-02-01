@@ -36,6 +36,7 @@ namespace ps2recomp
         std::vector<Symbol> m_symbols;
         std::vector<Section> m_sections;
         std::vector<Relocation> m_relocations;
+		std::vector<Variable> m_variables;
 
         std::unordered_map<uint32_t, std::vector<Instruction>> m_decodedFunctions;
         std::unordered_map<std::string, bool> m_skipFunctions;
@@ -51,6 +52,7 @@ namespace ps2recomp
         std::string generateRuntimeHeader();
         bool generateFunctionHeader();
         bool generateStubHeader();
+		bool generateVariableFiles();
         bool writeToFile(const std::string &path, const std::string &content);
         std::filesystem::path getOutputPath(const Function &function) const;
         std::string sanitizeFunctionName(const std::string &name) const;

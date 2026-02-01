@@ -98,6 +98,7 @@ namespace ps2recomp
         bool isFunction;
         bool isImported;
         bool isExported;
+		bool isObject;
     };
 
     // Section information
@@ -172,6 +173,26 @@ namespace ps2recomp
         std::unordered_map<uint32_t, std::string> patches;
         std::vector<std::string> stubImplementations;
     };
+	
+	// Variables
+    struct Variable {
+    std::string name;
+    uint32_t address;
+    uint32_t size;
+    std::string sectionName;
+    bool isBSS;
+    bool isReadOnly;
+    bool isObject;
+    std::vector<uint8_t> initData;	// empty for BSS
+    struct RelocRef {				// relocations inside this variable
+        uint32_t offsetIntoVar;
+        uint32_t type;
+        uint32_t symbolIndex;		// index into m_symbols vector
+        int32_t addend;
+    };
+    std::vector<RelocRef> relocRefs;
+};
+
 
 } // namespace ps2recomp
 

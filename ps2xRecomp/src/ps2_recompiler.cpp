@@ -70,6 +70,9 @@ namespace ps2recomp
             m_symbols = m_elfParser->extractSymbols();
             m_sections = m_elfParser->getSections();
             m_relocations = m_elfParser->getRelocations();
+            m_variables = m_elfParser->getVariables();
+
+
 
             if (m_functions.empty())
             {
@@ -212,6 +215,9 @@ namespace ps2recomp
         try
         {
             m_functionRenames.clear();
+
+            generateVariableFiles();
+
 
             std::unordered_map<std::string, int> nameCounts;
             for (const auto &function : m_functions)
@@ -392,12 +398,116 @@ namespace ps2recomp
             std::cout << "Generated function registration file: " << registerPath << std::endl;
 
             generateStubHeader();
+
+
+          
+
         }
         catch (const std::exception &e)
         {
             std::cerr << "Error during output generation: " << e.what() << std::endl;
         }
     }
+
+    bool PS2Recompiler::generateVariableFiles()
+    {
+        std::cerr << "generateVariableFiles: start\n";
+
+        if (m_variables.empty())
+        {
+            std::cerr << "generateVariableFiles: no variables\n";
+            return true;
+        }
+
+        std::stringstream header;
+        std::stringstream source;
+
+        header << "#pragma once\n";
+        header << "#include <cstdint>\n\n";
+
+        // optional: provide C linkage if needed
+        header << "#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n";
+
+        // keep track of names to avoid duplicates
+        std::unordered_map<std::string, int> nameCounts;
+
+        // Forward-declare in header and define in source
+        for (const auto& var : m_variables)
+        {
+            // sanitize and ensure unique
+            std::string baseName = sanitizeFunctionName(var.name.empty() ? ("var_0x" + [&]() { std::ostringstream ss; ss << std::hex << var.address; return ss.str(); }()) : var.name);
+            int& cnt = nameCounts[baseName];
+            std::string name = baseName;
+            if (cnt > 0)
+            {
+                std::ostringstream ss;
+                ss << baseName << "_0x" << std::hex << var.address;
+                name = ss.str();
+            }
+            cnt++;
+
+            // Handle zero-size variables: declare single byte
+            if (var.size == 0)
+            {
+                header << "extern uint8_t " << name << ";\n";
+                source << "uint8_t " << name << " = 0;\n";
+                continue;
+            }
+
+            // header: extern
+            header << "extern uint8_t " << name << "[" << var.size << "];\n";
+
+            // source: try to include init data if present, otherwise emit an uninitialized global (BSS) or zero-init
+            if (!var.initData.empty())
+            {
+                source << "uint8_t " << name << "[" << var.size << "] = {";
+                for (size_t i = 0; i < var.initData.size(); ++i)
+                {
+                    source << "0x" << std::hex << (static_cast<int>(var.initData[i]) & 0xFF);
+                    if (i + 1 < var.initData.size())
+                        source << ", ";
+                }
+                // if initData smaller than declared size, pad with zeros
+                if (var.initData.size() < var.size)
+                {
+                    if (!var.initData.empty()) source << ", ";
+                    for (size_t i = var.initData.size(); i < var.size; ++i)
+                    {
+                        source << "0x0";
+                        if (i + 1 < var.size) source << ", ";
+                    }
+                }
+                source << "};\n";
+                // reset stream format to decimal for future output
+                source << std::dec;
+            }
+            else
+            {
+                // BSS or no init data: define as global array (it will be zero-initialized in BSS)
+                source << "uint8_t " << name << "[" << var.size << "];\n";
+            }
+        }
+
+        header << "\n#ifdef __cplusplus\n}\n#endif\n";
+
+        // write files
+        fs::path headerPath = fs::path(m_config.outputPath) / "ps2_recompiled_globals.h";
+        fs::path sourcePath = fs::path(m_config.outputPath) / "ps2_recompiled_globals.cpp";
+
+        writeToFile(headerPath.string(), header.str());
+
+        // source includes header
+        std::stringstream finalSource;
+        finalSource << "#include \"ps2_recompiled_globals.h\"\n\n";
+        finalSource << source.str();
+
+        writeToFile(sourcePath.string(), finalSource.str());
+
+        std::cout << "Generated variable files: " << headerPath << " and " << sourcePath << std::endl;
+        return true;
+    }
+
+
 
     bool PS2Recompiler::generateStubHeader()
     {
@@ -718,6 +828,10 @@ namespace ps2recomp
     {
         std::string sanitized = name;
         std::replace(sanitized.begin(), sanitized.end(), '.', '_');
+        std::replace(sanitized.begin(), sanitized.end(), '@', '_');
+        std::replace(sanitized.begin(), sanitized.end(), '<', '_');
+        std::replace(sanitized.begin(), sanitized.end(), '>', '_');
+        std::replace(sanitized.begin(), sanitized.end(), ',', '_');
 
         if (sanitized == "main")
         {

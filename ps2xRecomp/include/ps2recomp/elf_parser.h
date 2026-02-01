@@ -22,6 +22,7 @@ namespace ps2recomp
         std::vector<Symbol> extractSymbols();
         std::vector<Section> getSections();
         std::vector<Relocation> getRelocations();
+		std::vector<Variable> getVariables();
 
         // Helper methods
         bool isValidAddress(uint32_t address) const;
@@ -38,10 +39,12 @@ namespace ps2recomp
         std::vector<Section> m_sections;
         std::vector<Symbol> m_symbols;
         std::vector<Relocation> m_relocations;
+		std::vector<Variable> m_variables;
 
         void loadSections();
         void loadSymbols();
         void loadRelocations();
+		void extractVariables();
         bool isExecutableSection(const ELFIO::section *section) const;
         bool isDataSection(const ELFIO::section *section) const;
     };

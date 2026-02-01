@@ -1,4 +1,4 @@
-#include "ps2recomp/elf_parser.h"
+﻿#include "ps2recomp/elf_parser.h"
 #include <iostream>
 #include <stdexcept>
 
@@ -60,6 +60,11 @@ namespace ps2recomp
     std::vector<Relocation> ElfParser::getRelocations()
     {
         return m_relocations;
+    }
+
+    std::vector<Variable> ElfParser::getVariables()
+    {
+        return m_variables;
     }
 
     bool ElfParser::isValidAddress(uint32_t address) const
@@ -156,6 +161,7 @@ namespace ps2recomp
         loadSections();
         loadSymbols();
         loadRelocations();
+        extractVariables();
 
         return true;
     }
@@ -235,6 +241,7 @@ namespace ps2recomp
                     symbol.isFunction = (type == ELFIO::STT_FUNC);
                     symbol.isImported = (bind == ELFIO::STB_GLOBAL && section_index == ELFIO::SHN_UNDEF);
                     symbol.isExported = (bind == ELFIO::STB_GLOBAL && section_index != ELFIO::SHN_UNDEF);
+                    symbol.isObject = (type == ELFIO::STT_OBJECT);
 
                     m_symbols.push_back(symbol);
                 }
@@ -250,47 +257,111 @@ namespace ps2recomp
         {
             ELFIO::section *psec = m_elf->sections[i];
 
-            if (psec->get_type() == ELFIO::SHT_REL || psec->get_type() == ELFIO::SHT_RELA)
+            if (psec->get_type() != ELFIO::SHT_REL &&
+                psec->get_type() != ELFIO::SHT_RELA)
+                continue;
+
+            ELFIO::relocation_section_accessor relocs(*m_elf, psec);
+
+            // target section where relocation is applied
+            ELFIO::section* targetSec = m_elf->sections[psec->get_info()];
+            uint32_t targetBase = static_cast<uint32_t>(targetSec->get_address());
+
+            for (ELFIO::Elf_Xword j = 0; j < relocs.get_entries_num(); ++j)
             {
-                ELFIO::relocation_section_accessor relocs(*m_elf, psec);
+                ELFIO::Elf64_Addr offset;
+                ELFIO::Elf_Word symbol;
+                ELFIO::Elf_Word type;
+                ELFIO::Elf_Sxword addend = 0;
 
-                ELFIO::section *symSec = m_elf->sections[psec->get_link()];
-                ELFIO::symbol_section_accessor symbols(*m_elf, symSec);
+   
+                    relocs.get_entry(j, offset, symbol, type, addend);
 
-                ELFIO::section *strSec = m_elf->sections[symSec->get_link()];
+                Relocation r;
+                r.offset = targetBase + static_cast<uint32_t>(offset);
+                r.symbol = symbol;
+                r.type = type;
+                r.addend = static_cast<int32_t>(addend);
 
-                ELFIO::string_section_accessor strings(strSec);
-
-                for (ELFIO::Elf_Xword j = 0; j < relocs.get_entries_num(); ++j)
-                {
-                    ELFIO::Elf64_Addr offset;
-                    ELFIO::Elf_Word symbol;
-                    ELFIO::Elf_Word type;
-                    ELFIO::Elf_Sxword addend;
-
-                    // Always use the 5-parameter version
-                    if (psec->get_type() == ELFIO::SHT_REL)
-                    {
-                        // Pass addend even for REL sections
-                        relocs.get_entry(j, offset, symbol, type, addend);
-                        // Reset addend for REL sections since it's not part of the section
-                        addend = 0;
-                    }
-                    else
-                    {
-                        relocs.get_entry(j, offset, symbol, type, addend);
-                    }
-
-                    Relocation reloc;
-                    reloc.offset = static_cast<uint32_t>(offset);
-                    reloc.info = (symbol << 8) | (type & 0xFF);
-                    reloc.symbol = symbol;
-                    reloc.type = type;
-                    reloc.addend = static_cast<int32_t>(addend);
-
-                    m_relocations.push_back(reloc);
-                }
+                m_relocations.push_back(r);
             }
         }
     }
+
+
+    void ElfParser::extractVariables()
+    {
+        m_variables.clear();
+
+        for (size_t i = 0; i < m_symbols.size(); ++i)
+        {
+            const auto& sym = m_symbols[i];
+
+            if (!sym.isObject)
+                continue;
+
+            if (sym.address == 0)
+                continue;
+
+            Variable v;
+            v.name = sym.name;
+            v.address = sym.address;
+            v.size = sym.size;
+            v.isObject = true;
+            v.sectionName = "";
+            v.isBSS = false;
+            v.isReadOnly = false;
+
+            // encontrar seção da variável
+            const Section* secPtr = nullptr;
+            for (const auto& sec : m_sections)
+            {
+                if (sym.address >= sec.address &&
+                    sym.address < sec.address + sec.size)
+                {
+                    secPtr = &sec;
+                    break;
+                }
+            }
+
+            if (secPtr)
+            {
+                v.sectionName = secPtr->name;
+                v.isBSS = secPtr->isBSS;
+                v.isReadOnly = secPtr->isReadOnly;
+
+                if (!v.isBSS && secPtr->data && v.size > 0)
+                {
+                    uint32_t offset = sym.address - secPtr->address;
+                    v.initData.resize(v.size);
+                    std::memcpy(v.initData.data(),
+                        secPtr->data + offset,
+                        v.size);
+                }
+            }
+            else
+            {
+                v.isBSS = true;
+            }
+
+            // associate relocations with the variable
+            for (const auto& rel : m_relocations)
+            {
+                if (rel.offset >= v.address &&
+                    rel.offset < v.address + (v.size ? v.size : 1))
+                {
+                    Variable::RelocRef rr;
+                    rr.offsetIntoVar = rel.offset - v.address;
+                    rr.type = rel.type;
+                    rr.symbolIndex = rel.symbol;
+                    rr.addend = rel.addend;
+                    v.relocRefs.push_back(rr);
+                }
+            }
+
+            m_variables.push_back(std::move(v));
+        }
+    }
+
+
 }
